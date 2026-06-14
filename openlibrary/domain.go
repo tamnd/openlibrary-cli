@@ -46,6 +46,11 @@ key, nothing to run alongside it.`,
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
+	// isbn: fetch a book by ISBN
+	kit.Handle(app, kit.OpMeta{Name: "isbn", Group: "read", Single: true,
+		Summary: "Get book details by ISBN",
+		Args:    []kit.Arg{{Name: "isbn", Help: "ISBN-10 or ISBN-13"}}}, isbnOp)
+
 	// search: search books by query string
 	kit.Handle(app, kit.OpMeta{Name: "search", Group: "read", List: true,
 		Summary: "Search books by query",
@@ -93,6 +98,11 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 // --- inputs ---
 
+type isbnInput struct {
+	ISBN   string  `kit:"arg" help:"ISBN-10 or ISBN-13"`
+	Client *Client `kit:"inject"`
+}
+
 type searchInput struct {
 	Query  string  `kit:"arg" help:"search query"`
 	Limit  int     `kit:"flag,inherit" help:"max results (default 20)"`
@@ -122,6 +132,14 @@ type workInput struct {
 }
 
 // --- handlers ---
+
+func isbnOp(ctx context.Context, in isbnInput, emit func(*Book) error) error {
+	book, err := in.Client.GetBookByISBN(ctx, in.ISBN)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(book)
+}
 
 func searchBooks(ctx context.Context, in searchInput, emit func(*Book) error) error {
 	limit := in.Limit

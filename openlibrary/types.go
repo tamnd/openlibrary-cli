@@ -2,16 +2,21 @@ package openlibrary
 
 // Book is one book record from Open Library.
 type Book struct {
-	Rank        int      `json:"rank"               csv:"rank"               tsv:"rank"`
-	Key         string   `json:"key"                csv:"key"                tsv:"key"`
-	Title       string   `json:"title"              csv:"title"              tsv:"title"`
-	Authors     []string `json:"authors"            csv:"authors"            tsv:"authors"`
-	FirstYear   int      `json:"first_publish_year" csv:"first_publish_year" tsv:"first_publish_year"`
-	Editions    int      `json:"edition_count"      csv:"edition_count"      tsv:"edition_count"`
-	EbookAccess string   `json:"ebook_access"       csv:"ebook_access"       tsv:"ebook_access"`
-	Languages   []string `json:"languages"          csv:"languages"          tsv:"languages"`
-	CoverID     int      `json:"cover_id"           csv:"cover_id"           tsv:"cover_id"`
-	URL         string   `json:"url"                csv:"url"                tsv:"url"`
+	Rank        int      `json:"rank,omitempty"               csv:"rank"               tsv:"rank"`
+	Key         string   `json:"key,omitempty"                csv:"key"                tsv:"key"`
+	Title       string   `json:"title"                        csv:"title"              tsv:"title"`
+	Authors     []string `json:"authors"                      csv:"authors"            tsv:"authors"`
+	Publishers  []string `json:"publishers,omitempty"         csv:"publishers"         tsv:"publishers"`
+	PublishDate string   `json:"publish_date,omitempty"       csv:"publish_date"       tsv:"publish_date"`
+	FirstYear   int      `json:"first_publish_year,omitempty" csv:"first_publish_year" tsv:"first_publish_year"`
+	Editions    int      `json:"edition_count,omitempty"      csv:"edition_count"      tsv:"edition_count"`
+	EbookAccess string   `json:"ebook_access,omitempty"       csv:"ebook_access"       tsv:"ebook_access"`
+	Languages   []string `json:"languages,omitempty"          csv:"languages"          tsv:"languages"`
+	CoverID     int      `json:"cover_id,omitempty"           csv:"cover_id"           tsv:"cover_id"`
+	CoverURL    string   `json:"cover_url,omitempty"          csv:"cover_url"          tsv:"cover_url"`
+	Pages       int      `json:"pages,omitempty"              csv:"pages"              tsv:"pages"`
+	Subjects    []string `json:"subjects,omitempty"           csv:"subjects"           tsv:"subjects"`
+	URL         string   `json:"url,omitempty"                csv:"url"                tsv:"url"`
 }
 
 // Subject is a subject category with its book count.

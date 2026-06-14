@@ -267,6 +267,84 @@ func (c *Client) GetAuthor(ctx context.Context, olid string) (*Author, error) {
 	}, nil
 }
 
+// GetBookByISBN fetches a book record by ISBN (10 or 13 digits).
+// Uses the /api/books endpoint with jscmd=data.
+func (c *Client) GetBookByISBN(ctx context.Context, isbn string) (*Book, error) {
+	key := "ISBN:" + isbn
+	u := fmt.Sprintf("%s/api/books?bibkeys=%s&format=json&jscmd=data",
+		c.cfg.BaseURL, url.QueryEscape(key))
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	// response: map[string]json.RawMessage keyed by "ISBN:NNNN"
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode isbn response: %w", err)
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("isbn %s not found", isbn)
+	}
+	// take the first (and typically only) value
+	var first json.RawMessage
+	for _, v := range raw {
+		first = v
+		break
+	}
+	var b wireISBNBook
+	if err := json.Unmarshal(first, &b); err != nil {
+		return nil, fmt.Errorf("decode isbn book: %w", err)
+	}
+	authors := make([]string, 0, len(b.Authors))
+	for _, a := range b.Authors {
+		if a.Name != "" {
+			authors = append(authors, a.Name)
+		}
+	}
+	publishers := make([]string, 0, len(b.Publishers))
+	for _, p := range b.Publishers {
+		if p.Name != "" {
+			publishers = append(publishers, p.Name)
+		}
+	}
+	subjects := make([]string, 0, len(b.Subjects))
+	for _, s := range b.Subjects {
+		if s.Name != "" {
+			subjects = append(subjects, s.Name)
+		}
+	}
+	return &Book{
+		Title:       b.Title,
+		Authors:     authors,
+		Publishers:  publishers,
+		PublishDate: b.PublishDate,
+		Pages:       b.NumberOfPages,
+		Subjects:    subjects,
+		CoverURL:    b.Cover.Medium,
+		URL:         b.URL,
+	}, nil
+}
+
+// wireISBNBook is the wire type for a single book from /api/books?jscmd=data.
+type wireISBNBook struct {
+	Title       string `json:"title"`
+	Authors     []struct {
+		Name string `json:"name"`
+	} `json:"authors"`
+	Publishers []struct {
+		Name string `json:"name"`
+	} `json:"publishers"`
+	PublishDate   string `json:"publish_date"`
+	Subjects      []struct {
+		Name string `json:"name"`
+	} `json:"subjects"`
+	Cover struct {
+		Medium string `json:"medium"`
+	} `json:"cover"`
+	NumberOfPages int    `json:"number_of_pages"`
+	URL           string `json:"url"`
+}
+
 // GetWork fetches the full work record by OL ID (e.g. "OL45804W").
 // The /works/ prefix is stripped from olid if present.
 func (c *Client) GetWork(ctx context.Context, olid string) (*Work, error) {

@@ -355,6 +355,78 @@ func TestGetWorkDescriptionFlattened(t *testing.T) {
 	}
 }
 
+const fakeISBN = `{
+  "ISBN:9780140328721": {
+    "title": "Fantastic Mr. Fox",
+    "authors": [{"name": "Roald Dahl", "url": "https://openlibrary.org/authors/OL34184A/Roald_Dahl"}],
+    "publishers": [{"name": "Puffin Books"}],
+    "publish_date": "1988",
+    "subjects": [{"name": "Foxes"}, {"name": "Fiction"}],
+    "cover": {"medium": "https://covers.openlibrary.org/b/id/8739161-M.jpg"},
+    "number_of_pages": 96,
+    "url": "https://openlibrary.org/books/OL7353617M/Fantastic_Mr_Fox"
+  }
+}`
+
+func TestGetBookByISBNParses(t *testing.T) {
+	var gotPath, gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = fmt.Fprint(w, fakeISBN)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	book, err := c.GetBookByISBN(context.Background(), "9780140328721")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/books" {
+		t.Errorf("path = %q, want /api/books", gotPath)
+	}
+	if !strings.Contains(gotQuery, "ISBN") {
+		t.Errorf("query %q does not contain ISBN", gotQuery)
+	}
+	if book.Title != "Fantastic Mr. Fox" {
+		t.Errorf("Title = %q", book.Title)
+	}
+	if len(book.Authors) != 1 || book.Authors[0] != "Roald Dahl" {
+		t.Errorf("Authors = %v", book.Authors)
+	}
+	if len(book.Publishers) != 1 || book.Publishers[0] != "Puffin Books" {
+		t.Errorf("Publishers = %v", book.Publishers)
+	}
+	if book.PublishDate != "1988" {
+		t.Errorf("PublishDate = %q, want 1988", book.PublishDate)
+	}
+	if book.Pages != 96 {
+		t.Errorf("Pages = %d, want 96", book.Pages)
+	}
+	if len(book.Subjects) != 2 {
+		t.Errorf("len(Subjects) = %d, want 2", len(book.Subjects))
+	}
+	if book.CoverURL == "" {
+		t.Error("CoverURL should not be empty")
+	}
+	if book.URL == "" {
+		t.Error("URL should not be empty")
+	}
+}
+
+func TestGetBookByISBNNotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{}`)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, err := c.GetBookByISBN(context.Background(), "0000000000")
+	if err == nil {
+		t.Error("expected error for not-found ISBN")
+	}
+}
+
 func TestSubjectParsesItems(t *testing.T) {
 	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
