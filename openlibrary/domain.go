@@ -3,6 +3,8 @@ package openlibrary
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
@@ -46,35 +48,30 @@ key, nothing to run alongside it.`,
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// isbn: fetch a book by ISBN
-	kit.Handle(app, kit.OpMeta{Name: "isbn", Group: "read", Single: true,
-		Summary: "Get book details by ISBN",
-		Args:    []kit.Arg{{Name: "isbn", Help: "ISBN-10 or ISBN-13"}}}, isbnOp)
-
 	// search: search books by query string
 	kit.Handle(app, kit.OpMeta{Name: "search", Group: "read", List: true,
 		Summary: "Search books by query",
-		Args:    []kit.Arg{{Name: "query", Help: "search query"}}}, searchBooks)
-
-	// subjects: list books in a subject category
-	kit.Handle(app, kit.OpMeta{Name: "subjects", Group: "read", List: true,
-		Summary: "List books in a subject category",
-		Args:    []kit.Arg{{Name: "subject", Help: "subject name (e.g. \"computer science\")"}}}, subjectBooks)
-
-	// authors: search authors by name
-	kit.Handle(app, kit.OpMeta{Name: "authors", Group: "read", List: true,
-		Summary: "Search authors by name",
-		Args:    []kit.Arg{{Name: "query", Help: "author name"}}}, searchAuthorsOp)
-
-	// author: fetch author detail by OL ID
-	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", Single: true,
-		Summary: "Get author detail by OL ID (e.g. OL23919A)",
-		Args:    []kit.Arg{{Name: "olid", Help: "OL author ID"}}}, getAuthorOp)
+		Args:    []kit.Arg{{Name: "query", Help: "search query"}}}, searchOp)
 
 	// work: fetch work detail by OL ID
 	kit.Handle(app, kit.OpMeta{Name: "work", Group: "read", Single: true,
 		Summary: "Get work detail by OL ID (e.g. OL45804W)",
-		Args:    []kit.Arg{{Name: "olid", Help: "OL work ID"}}}, getWorkOp)
+		Args:    []kit.Arg{{Name: "key", Help: "work key e.g. OL45804W (without /works/ prefix)"}}}, workOp)
+
+	// author: fetch author detail and works by OL ID
+	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", List: true,
+		Summary: "Get author detail and works by OL ID (e.g. OL26320A)",
+		Args:    []kit.Arg{{Name: "key", Help: "author key e.g. OL26320A (without /authors/ prefix)"}}}, authorOp)
+
+	// subject: list works in a subject category
+	kit.Handle(app, kit.OpMeta{Name: "subject", Group: "read", List: true,
+		Summary: "List works in a subject category",
+		Args:    []kit.Arg{{Name: "subject", Help: "subject slug e.g. science_fiction"}}}, subjectOp)
+
+	// isbn: fetch a book edition by ISBN
+	kit.Handle(app, kit.OpMeta{Name: "isbn", Group: "read", Single: true,
+		Summary: "Get book edition details by ISBN",
+		Args:    []kit.Arg{{Name: "isbn", Help: "ISBN-10 or ISBN-13"}}}, isbnOp)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -98,53 +95,40 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 // --- inputs ---
 
+type searchInput struct {
+	Query  string  `kit:"arg" help:"search query"`
+	Limit  int     `kit:"flag,inherit" help:"max results" default:"10"`
+	Client *Client `kit:"inject"`
+}
+
+type workInput struct {
+	Key    string  `kit:"arg" help:"work key e.g. OL45804W (without /works/ prefix)"`
+	Client *Client `kit:"inject"`
+}
+
+type authorInput struct {
+	Key    string  `kit:"arg" help:"author key e.g. OL26320A (without /authors/ prefix)"`
+	Limit  int     `kit:"flag,inherit"`
+	Client *Client `kit:"inject"`
+}
+
+type subjectInput struct {
+	Subject string  `kit:"arg" help:"subject slug e.g. science_fiction"`
+	Limit   int     `kit:"flag,inherit" help:"max works" default:"10"`
+	Client  *Client `kit:"inject"`
+}
+
 type isbnInput struct {
 	ISBN   string  `kit:"arg" help:"ISBN-10 or ISBN-13"`
 	Client *Client `kit:"inject"`
 }
 
-type searchInput struct {
-	Query  string  `kit:"arg" help:"search query"`
-	Limit  int     `kit:"flag,inherit" help:"max results (default 20)"`
-	Client *Client `kit:"inject"`
-}
-
-type subjectInput struct {
-	Subject string  `kit:"arg" help:"subject name"`
-	Limit   int     `kit:"flag,inherit" help:"max results (default 20)"`
-	Client  *Client `kit:"inject"`
-}
-
-type authorsInput struct {
-	Query  string  `kit:"arg"          help:"author name"`
-	Limit  int     `kit:"flag,inherit" help:"max results (default 10)"`
-	Client *Client `kit:"inject"`
-}
-
-type authorInput struct {
-	OLID   string  `kit:"arg"    help:"OL author ID (e.g. OL23919A)"`
-	Client *Client `kit:"inject"`
-}
-
-type workInput struct {
-	OLID   string  `kit:"arg"    help:"OL work ID (e.g. OL45804W)"`
-	Client *Client `kit:"inject"`
-}
-
 // --- handlers ---
 
-func isbnOp(ctx context.Context, in isbnInput, emit func(*Book) error) error {
-	book, err := in.Client.GetBookByISBN(ctx, in.ISBN)
-	if err != nil {
-		return mapErr(err)
-	}
-	return emit(book)
-}
-
-func searchBooks(ctx context.Context, in searchInput, emit func(*Book) error) error {
+func searchOp(ctx context.Context, in searchInput, emit func(*Book) error) error {
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 20
+		limit = 10
 	}
 	books, err := in.Client.SearchBooks(ctx, in.Query, limit)
 	if err != nil {
@@ -161,77 +145,107 @@ func searchBooks(ctx context.Context, in searchInput, emit func(*Book) error) er
 	return nil
 }
 
-func searchAuthorsOp(ctx context.Context, in authorsInput, emit func(*Author) error) error {
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	authors, err := in.Client.SearchAuthors(ctx, in.Query, limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	if len(authors) == 0 {
-		return errs.NotFound("no authors found for %q", in.Query)
-	}
-	for i := range authors {
-		if err := emit(&authors[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func getAuthorOp(ctx context.Context, in authorInput, emit func(*Author) error) error {
-	author, err := in.Client.GetAuthor(ctx, in.OLID)
-	if err != nil {
-		return mapErr(err)
-	}
-	return emit(author)
-}
-
-func getWorkOp(ctx context.Context, in workInput, emit func(*Work) error) error {
-	work, err := in.Client.GetWork(ctx, in.OLID)
+func workOp(ctx context.Context, in workInput, emit func(*Work) error) error {
+	work, err := in.Client.GetWork(ctx, in.Key)
 	if err != nil {
 		return mapErr(err)
 	}
 	return emit(work)
 }
 
-func subjectBooks(ctx context.Context, in subjectInput, emit func(*Book) error) error {
+func authorOp(ctx context.Context, in authorInput, emit func(*SubjectWork) error) error {
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 20
+		limit = 10
 	}
-	books, err := in.Client.Subject(ctx, in.Subject, limit)
+	works, err := in.Client.GetAuthorWorks(ctx, in.Key, limit)
 	if err != nil {
 		return mapErr(err)
 	}
-	if len(books) == 0 {
-		return errs.NotFound("no books found for subject %q", in.Subject)
-	}
-	for i := range books {
-		if err := emit(&books[i]); err != nil {
+	for i := range works {
+		if err := emit(&works[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func subjectOp(ctx context.Context, in subjectInput, emit func(*SubjectWork) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	works, err := in.Client.GetSubject(ctx, in.Subject, limit)
+	if err != nil {
+		return mapErr(err)
+	}
+	if len(works) == 0 {
+		return errs.NotFound("no works found for subject %q", in.Subject)
+	}
+	for i := range works {
+		if err := emit(&works[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isbnOp(ctx context.Context, in isbnInput, emit func(*Edition) error) error {
+	edition, err := in.Client.GetEditionByISBN(ctx, in.ISBN)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(edition)
+}
+
 // --- Resolver: pure string functions, no network ---
 
 // Classify turns any accepted input into the canonical (type, id).
+//
+//   - starts with "OL" and ends in "A" (like OL26320A) → ("author", input)
+//   - starts with "OL" and ends in "W" (like OL45804W) → ("work", input)
+//   - all digits, 10 or 13 chars → ("isbn", input)
+//   - otherwise → ("query", input)
 func (Domain) Classify(input string) (uriType, id string, err error) {
 	if input == "" {
 		return "", "", errs.Usage("empty openlibrary reference")
 	}
-	return "book", input, nil
+	upper := strings.ToUpper(input)
+	if strings.HasPrefix(upper, "OL") {
+		if strings.HasSuffix(upper, "A") {
+			return "author", input, nil
+		}
+		if strings.HasSuffix(upper, "W") {
+			return "work", input, nil
+		}
+	}
+	if isDigits(input) && (len(input) == 10 || len(input) == 13) {
+		return "isbn", input, nil
+	}
+	return "query", input, nil
+}
+
+// isDigits reports whether s consists entirely of ASCII digits.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // Locate is the inverse: the live https URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
 	switch uriType {
-	case "book":
+	case "author":
+		return fmt.Sprintf("https://openlibrary.org/authors/%s", id), nil
+	case "work":
 		return fmt.Sprintf("https://openlibrary.org/works/%s", id), nil
+	case "isbn":
+		return fmt.Sprintf("https://openlibrary.org/isbn/%s", id), nil
+	case "query":
+		return fmt.Sprintf("https://openlibrary.org/search?q=%s", id), nil
 	default:
 		return "", errs.Usage("openlibrary has no resource type %q", uriType)
 	}

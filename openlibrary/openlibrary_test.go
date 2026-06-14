@@ -2,6 +2,7 @@ package openlibrary_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,51 +12,85 @@ import (
 	"github.com/tamnd/openlibrary-cli/openlibrary"
 )
 
-const fakeSearch = `{
-  "numFound": 2,
-  "docs": [
-    {
-      "key": "/works/OL30906747W",
-      "title": "Core Python Programming",
-      "author_name": ["R. Nageswara Rao"],
-      "first_publish_year": 2016,
-      "edition_count": 3,
-      "ebook_access": "no_ebook",
-      "language": ["eng"],
-      "cover_i": 12345
-    },
-    {
-      "key": "/works/OL1234567W",
-      "title": "Python Cookbook",
-      "author_name": ["David Beazley", "Brian K. Jones"],
-      "first_publish_year": 2013,
-      "edition_count": 2,
-      "ebook_access": "borrowable",
-      "language": ["eng"],
-      "cover_i": 0
-    }
-  ]
-}`
-
-const fakeSubject = `{
-  "name": "Computer science",
-  "work_count": 5000,
-  "works": [
-    {
-      "key": "/works/OL30906747W",
-      "title": "Core Python Programming",
-      "authors": [{"name": "R. Nageswara Rao"}],
-      "cover_id": 12345,
-      "edition_count": 3
-    }
-  ]
-}`
-
+// newTestClient creates a client pointed at a test server with rate limiting off.
 func newTestClient(ts *httptest.Server) *openlibrary.Client {
 	cfg := openlibrary.DefaultConfig()
 	cfg.BaseURL = ts.URL
 	cfg.Rate = 0
 	return openlibrary.NewClient(cfg)
+}
+
+// --- Search ---
+
+const fakeSearch = `{
+  "numFound": 2,
+  "docs": [
+    {
+      "key": "/works/OL45804W",
+      "title": "Dune",
+      "author_name": ["Frank Herbert"],
+      "first_publish_year": 1965,
+      "isbn": ["0441013597", "9780441013593"]
+    },
+    {
+      "key": "/works/OL999W",
+      "title": "Dune Messiah",
+      "author_name": ["Frank Herbert"],
+      "first_publish_year": 1969,
+      "isbn": []
+    }
+  ]
+}`
+
+func TestSearchBooksParsesItems(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, fakeSearch)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	books, err := c.SearchBooks(context.Background(), "dune", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != 2 {
+		t.Fatalf("want 2 books, got %d", len(books))
+	}
+
+	b := books[0]
+	if b.Key != "OL45804W" {
+		t.Errorf("Key = %q, want OL45804W (prefix stripped)", b.Key)
+	}
+	if b.Title != "Dune" {
+		t.Errorf("Title = %q, want Dune", b.Title)
+	}
+	if len(b.Authors) != 1 || b.Authors[0] != "Frank Herbert" {
+		t.Errorf("Authors = %v", b.Authors)
+	}
+	if b.PublishYear != 1965 {
+		t.Errorf("PublishYear = %d, want 1965", b.PublishYear)
+	}
+	if len(b.ISBN) != 2 {
+		t.Errorf("ISBN len = %d, want 2", len(b.ISBN))
+	}
+}
+
+func TestSearchBooksSendsFieldsAndLimit(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = fmt.Fprint(w, fakeSearch)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, _ = c.SearchBooks(context.Background(), "dune", 3)
+	if !strings.Contains(gotQuery, "limit=3") {
+		t.Errorf("query %q does not contain limit=3", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "fields=") {
+		t.Errorf("query %q does not contain fields=", gotQuery)
+	}
 }
 
 func TestSearchBooksSendsUserAgent(t *testing.T) {
@@ -67,85 +102,13 @@ func TestSearchBooksSendsUserAgent(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	_, err := c.SearchBooks(context.Background(), "python", 2)
+	_, err := c.SearchBooks(context.Background(), "dune", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := openlibrary.DefaultConfig().UserAgent
 	if gotUA != want {
 		t.Errorf("User-Agent = %q, want %q", gotUA, want)
-	}
-}
-
-func TestSearchBooksParsesItems(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, fakeSearch)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	books, err := c.SearchBooks(context.Background(), "python", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(books) != 2 {
-		t.Fatalf("want 2 books, got %d", len(books))
-	}
-
-	b := books[0]
-	if b.Key != "OL30906747W" {
-		t.Errorf("Key = %q, want OL30906747W", b.Key)
-	}
-	if b.Title != "Core Python Programming" {
-		t.Errorf("Title = %q", b.Title)
-	}
-	if len(b.Authors) != 1 || b.Authors[0] != "R. Nageswara Rao" {
-		t.Errorf("Authors = %v", b.Authors)
-	}
-	if b.FirstYear != 2016 {
-		t.Errorf("FirstYear = %d, want 2016", b.FirstYear)
-	}
-	if b.Editions != 3 {
-		t.Errorf("Editions = %d, want 3", b.Editions)
-	}
-	if b.EbookAccess != "no_ebook" {
-		t.Errorf("EbookAccess = %q", b.EbookAccess)
-	}
-	if len(b.Languages) != 1 || b.Languages[0] != "eng" {
-		t.Errorf("Languages = %v", b.Languages)
-	}
-	if b.CoverID != 12345 {
-		t.Errorf("CoverID = %d, want 12345", b.CoverID)
-	}
-	if b.URL != "https://openlibrary.org/works/OL30906747W" {
-		t.Errorf("URL = %q", b.URL)
-	}
-	if b.Rank != 1 {
-		t.Errorf("Rank = %d, want 1", b.Rank)
-	}
-	if books[1].Rank != 2 {
-		t.Errorf("books[1].Rank = %d, want 2", books[1].Rank)
-	}
-	if books[1].CoverID != 0 {
-		t.Errorf("books[1].CoverID = %d, want 0", books[1].CoverID)
-	}
-}
-
-func TestSearchBooksLimitRespected(t *testing.T) {
-	var gotQuery string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		_, _ = fmt.Fprint(w, fakeSearch)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	_, err := c.SearchBooks(context.Background(), "python", 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotQuery, "limit=3") {
-		t.Errorf("query %q does not contain limit=3", gotQuery)
 	}
 }
 
@@ -167,7 +130,7 @@ func TestSearchBooksRetriesOn503(t *testing.T) {
 	cfg.Retries = 3
 	c := openlibrary.NewClient(cfg)
 
-	books, err := c.SearchBooks(context.Background(), "python", 2)
+	books, err := c.SearchBooks(context.Background(), "dune", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,134 +142,29 @@ func TestSearchBooksRetriesOn503(t *testing.T) {
 	}
 }
 
-const fakeAuthorSearch = `{
-  "numFound": 3,
-  "docs": [
-    {
-      "key": "OL26320A",
-      "name": "J.R.R. Tolkien",
-      "birth_date": "1892",
-      "top_work": "The Lord of the Rings",
-      "work_count": 183
-    },
-    {
-      "key": "OL999A",
-      "name": "Christopher Tolkien",
-      "birth_date": "1924",
-      "top_work": "The Silmarillion",
-      "work_count": 42
-    }
-  ]
-}`
+// --- Work ---
 
-const fakeAuthorDetail = `{
-  "key": "/authors/OL23919A",
-  "name": "J. K. Rowling",
-  "birth_date": "31 July 1965",
-  "death_date": ""
-}`
-
-const fakeWorkDetail = `{
+const fakeWork = `{
   "key": "/works/OL45804W",
-  "title": "Fantastic Mr Fox",
-  "description": {"type": "/type/text", "value": "A story about foxes."},
-  "subjects": ["Animals", "Foxes", "Children's fiction"],
-  "authors": [
-    {"author": {"key": "/authors/OL34184A"}}
-  ]
+  "title": "Dune",
+  "description": {"type": "/type/text", "value": "A desert planet story."},
+  "subjects": ["Science fiction", "Desert ecology"],
+  "covers": [7979059, 1234567]
 }`
 
-const fakeWorkDetailStringDesc = `{
+const fakeWorkStringDesc = `{
   "key": "/works/OL99W",
   "title": "Some Book",
   "description": "A plain string description.",
   "subjects": [],
-  "authors": []
+  "covers": []
 }`
-
-func TestSearchAuthorsParsesItems(t *testing.T) {
-	var gotPath string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_, _ = fmt.Fprint(w, fakeAuthorSearch)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	authors, err := c.SearchAuthors(context.Background(), "tolkien", 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotPath, "/search/authors.json") {
-		t.Errorf("path = %q, want /search/authors.json", gotPath)
-	}
-	if len(authors) != 2 {
-		t.Fatalf("want 2 authors, got %d", len(authors))
-	}
-	a := authors[0]
-	if a.Key != "OL26320A" {
-		t.Errorf("Key = %q, want OL26320A", a.Key)
-	}
-	if a.Name != "J.R.R. Tolkien" {
-		t.Errorf("Name = %q", a.Name)
-	}
-	if a.BirthDate != "1892" {
-		t.Errorf("BirthDate = %q, want 1892", a.BirthDate)
-	}
-	if a.TopWork != "The Lord of the Rings" {
-		t.Errorf("TopWork = %q", a.TopWork)
-	}
-	if a.WorkCount != 183 {
-		t.Errorf("WorkCount = %d, want 183", a.WorkCount)
-	}
-	if a.Rank != 1 {
-		t.Errorf("Rank = %d, want 1", a.Rank)
-	}
-	if authors[1].Rank != 2 {
-		t.Errorf("authors[1].Rank = %d, want 2", authors[1].Rank)
-	}
-	wantURL := "https://openlibrary.org/authors/OL26320A"
-	if a.URL != wantURL {
-		t.Errorf("URL = %q, want %q", a.URL, wantURL)
-	}
-}
-
-func TestGetAuthorParses(t *testing.T) {
-	var gotPath string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		_, _ = fmt.Fprint(w, fakeAuthorDetail)
-	}))
-	defer ts.Close()
-
-	c := newTestClient(ts)
-	author, err := c.GetAuthor(context.Background(), "OL23919A")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(gotPath, "/authors/OL23919A.json") {
-		t.Errorf("path = %q, want to contain /authors/OL23919A.json", gotPath)
-	}
-	if author.Name != "J. K. Rowling" {
-		t.Errorf("Name = %q", author.Name)
-	}
-	if author.BirthDate != "31 July 1965" {
-		t.Errorf("BirthDate = %q", author.BirthDate)
-	}
-	if author.Key != "OL23919A" {
-		t.Errorf("Key = %q, want OL23919A (prefix stripped)", author.Key)
-	}
-	wantURL := "https://openlibrary.org/authors/OL23919A"
-	if author.URL != wantURL {
-		t.Errorf("URL = %q, want %q", author.URL, wantURL)
-	}
-}
 
 func TestGetWorkParses(t *testing.T) {
 	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_, _ = fmt.Fprint(w, fakeWorkDetail)
+		_, _ = fmt.Fprint(w, fakeWork)
 	}))
 	defer ts.Close()
 
@@ -318,30 +176,26 @@ func TestGetWorkParses(t *testing.T) {
 	if !strings.Contains(gotPath, "/works/OL45804W.json") {
 		t.Errorf("path = %q, want to contain /works/OL45804W.json", gotPath)
 	}
-	if work.Title != "Fantastic Mr Fox" {
-		t.Errorf("Title = %q", work.Title)
-	}
 	if work.Key != "OL45804W" {
 		t.Errorf("Key = %q, want OL45804W", work.Key)
 	}
-	if work.Desc != "A story about foxes." {
-		t.Errorf("Desc = %q", work.Desc)
+	if work.Title != "Dune" {
+		t.Errorf("Title = %q, want Dune", work.Title)
 	}
-	if len(work.Subjects) != 3 {
-		t.Errorf("len(Subjects) = %d, want 3", len(work.Subjects))
+	if work.Description != "A desert planet story." {
+		t.Errorf("Description = %q", work.Description)
 	}
-	if len(work.AuthorKeys) != 1 || work.AuthorKeys[0] != "/authors/OL34184A" {
-		t.Errorf("AuthorKeys = %v", work.AuthorKeys)
+	if len(work.Subjects) != 2 {
+		t.Errorf("Subjects len = %d, want 2", len(work.Subjects))
 	}
-	wantURL := "https://openlibrary.org/works/OL45804W"
-	if work.URL != wantURL {
-		t.Errorf("URL = %q, want %q", work.URL, wantURL)
+	if len(work.Covers) != 2 || work.Covers[0] != 7979059 {
+		t.Errorf("Covers = %v", work.Covers)
 	}
 }
 
-func TestGetWorkDescriptionFlattened(t *testing.T) {
+func TestGetWorkDescriptionStringFlattened(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, fakeWorkDetailStringDesc)
+		_, _ = fmt.Fprint(w, fakeWorkStringDesc)
 	}))
 	defer ts.Close()
 
@@ -350,84 +204,134 @@ func TestGetWorkDescriptionFlattened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.Desc != "A plain string description." {
-		t.Errorf("Desc = %q, want plain string", work.Desc)
+	if work.Description != "A plain string description." {
+		t.Errorf("Description = %q, want plain string", work.Description)
 	}
 }
 
-const fakeISBN = `{
-  "ISBN:9780140328721": {
-    "title": "Fantastic Mr. Fox",
-    "authors": [{"name": "Roald Dahl", "url": "https://openlibrary.org/authors/OL34184A/Roald_Dahl"}],
-    "publishers": [{"name": "Puffin Books"}],
-    "publish_date": "1988",
-    "subjects": [{"name": "Foxes"}, {"name": "Fiction"}],
-    "cover": {"medium": "https://covers.openlibrary.org/b/id/8739161-M.jpg"},
-    "number_of_pages": 96,
-    "url": "https://openlibrary.org/books/OL7353617M/Fantastic_Mr_Fox"
-  }
+// --- Author ---
+
+const fakeAuthor = `{
+  "key": "/authors/OL26320A",
+  "name": "J.R.R. Tolkien",
+  "birth_date": "3 January 1892",
+  "death_date": "2 September 1973",
+  "bio": {"type": "/type/text", "value": "British author of The Lord of the Rings."}
 }`
 
-func TestGetBookByISBNParses(t *testing.T) {
-	var gotPath, gotQuery string
+const fakeAuthorBioString = `{
+  "key": "/authors/OL999A",
+  "name": "Some Author",
+  "birth_date": "1970",
+  "death_date": "",
+  "bio": "A plain bio string."
+}`
+
+const fakeAuthorWorks = `{
+  "size": 403,
+  "entries": [
+    {"key": "/works/OL27516W", "title": "The Lord of the Rings"},
+    {"key": "/works/OL27519W", "title": "The Hobbit"}
+  ]
+}`
+
+func TestGetAuthorParses(t *testing.T) {
+	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		gotQuery = r.URL.RawQuery
-		_, _ = fmt.Fprint(w, fakeISBN)
+		_, _ = fmt.Fprint(w, fakeAuthor)
 	}))
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	book, err := c.GetBookByISBN(context.Background(), "9780140328721")
+	author, err := c.GetAuthor(context.Background(), "OL26320A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != "/api/books" {
-		t.Errorf("path = %q, want /api/books", gotPath)
+	if !strings.Contains(gotPath, "/authors/OL26320A.json") {
+		t.Errorf("path = %q, want /authors/OL26320A.json", gotPath)
 	}
-	if !strings.Contains(gotQuery, "ISBN") {
-		t.Errorf("query %q does not contain ISBN", gotQuery)
+	if author.Key != "OL26320A" {
+		t.Errorf("Key = %q, want OL26320A (prefix stripped)", author.Key)
 	}
-	if book.Title != "Fantastic Mr. Fox" {
-		t.Errorf("Title = %q", book.Title)
+	if author.Name != "J.R.R. Tolkien" {
+		t.Errorf("Name = %q", author.Name)
 	}
-	if len(book.Authors) != 1 || book.Authors[0] != "Roald Dahl" {
-		t.Errorf("Authors = %v", book.Authors)
+	if author.BirthDate != "3 January 1892" {
+		t.Errorf("BirthDate = %q", author.BirthDate)
 	}
-	if len(book.Publishers) != 1 || book.Publishers[0] != "Puffin Books" {
-		t.Errorf("Publishers = %v", book.Publishers)
+	if author.DeathDate != "2 September 1973" {
+		t.Errorf("DeathDate = %q", author.DeathDate)
 	}
-	if book.PublishDate != "1988" {
-		t.Errorf("PublishDate = %q, want 1988", book.PublishDate)
-	}
-	if book.Pages != 96 {
-		t.Errorf("Pages = %d, want 96", book.Pages)
-	}
-	if len(book.Subjects) != 2 {
-		t.Errorf("len(Subjects) = %d, want 2", len(book.Subjects))
-	}
-	if book.CoverURL == "" {
-		t.Error("CoverURL should not be empty")
-	}
-	if book.URL == "" {
-		t.Error("URL should not be empty")
+	if author.Bio != "British author of The Lord of the Rings." {
+		t.Errorf("Bio = %q", author.Bio)
 	}
 }
 
-func TestGetBookByISBNNotFound(t *testing.T) {
+func TestGetAuthorBioStringFlattened(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{}`)
+		_, _ = fmt.Fprint(w, fakeAuthorBioString)
 	}))
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	_, err := c.GetBookByISBN(context.Background(), "0000000000")
-	if err == nil {
-		t.Error("expected error for not-found ISBN")
+	author, err := c.GetAuthor(context.Background(), "OL999A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if author.Bio != "A plain bio string." {
+		t.Errorf("Bio = %q, want plain string", author.Bio)
 	}
 }
 
-func TestSubjectParsesItems(t *testing.T) {
+func TestGetAuthorWorksParses(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = fmt.Fprint(w, fakeAuthorWorks)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	works, err := c.GetAuthorWorks(context.Background(), "OL26320A", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotPath, "/authors/OL26320A/works.json") {
+		t.Errorf("path = %q, want /authors/OL26320A/works.json", gotPath)
+	}
+	if len(works) != 2 {
+		t.Fatalf("want 2 works, got %d", len(works))
+	}
+	if works[0].Key != "OL27516W" {
+		t.Errorf("works[0].Key = %q, want OL27516W", works[0].Key)
+	}
+	if works[0].Title != "The Lord of the Rings" {
+		t.Errorf("works[0].Title = %q", works[0].Title)
+	}
+}
+
+// --- Subject ---
+
+const fakeSubject = `{
+  "name": "science fiction",
+  "subject_type": "subject",
+  "work_count": 21054,
+  "works": [
+    {
+      "key": "/works/OL45340131W",
+      "title": "Alice's Adventures in Wonderland",
+      "authors": [{"key": "/authors/OL21594A", "name": "Lewis Carroll"}]
+    },
+    {
+      "key": "/works/OL45804W",
+      "title": "Dune",
+      "authors": [{"name": "Frank Herbert"}]
+    }
+  ]
+}`
+
+func TestGetSubjectParses(t *testing.T) {
 	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -436,21 +340,145 @@ func TestSubjectParsesItems(t *testing.T) {
 	defer ts.Close()
 
 	c := newTestClient(ts)
-	books, err := c.Subject(context.Background(), "computer science", 10)
+	works, err := c.GetSubject(context.Background(), "science_fiction", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(gotPath, "/subjects/computer_science.json") {
-		t.Errorf("path = %q, want to contain /subjects/computer_science.json", gotPath)
+	if !strings.Contains(gotPath, "/subjects/science_fiction.json") {
+		t.Errorf("path = %q, want /subjects/science_fiction.json", gotPath)
 	}
-	if len(books) != 1 {
-		t.Fatalf("want 1 book, got %d", len(books))
+	if len(works) != 2 {
+		t.Fatalf("want 2 works, got %d", len(works))
 	}
-	b := books[0]
-	if b.Title != "Core Python Programming" {
-		t.Errorf("Title = %q", b.Title)
+	w := works[0]
+	if w.Key != "OL45340131W" {
+		t.Errorf("Key = %q, want OL45340131W", w.Key)
 	}
-	if len(b.Authors) != 1 || b.Authors[0] != "R. Nageswara Rao" {
-		t.Errorf("Authors = %v", b.Authors)
+	if w.Title != "Alice's Adventures in Wonderland" {
+		t.Errorf("Title = %q", w.Title)
+	}
+	if len(w.Authors) != 1 || w.Authors[0] != "Lewis Carroll" {
+		t.Errorf("Authors = %v", w.Authors)
+	}
+}
+
+func TestGetSubjectSlugNormalized(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = fmt.Fprint(w, fakeSubject)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, _ = c.GetSubject(context.Background(), "science fiction", 3)
+	if !strings.Contains(gotPath, "/subjects/science_fiction.json") {
+		t.Errorf("path = %q, spaces should be converted to underscores", gotPath)
+	}
+}
+
+// --- ISBN ---
+
+const fakeISBN = `{
+  "key": "/books/OL7394022M",
+  "title": "Fantastic Mr. Fox",
+  "publishers": ["Puffin"],
+  "publish_date": "2009",
+  "number_of_pages": 96,
+  "isbn_10": ["0140328726"],
+  "isbn_13": ["9780140328721"]
+}`
+
+func TestGetEditionByISBNParses(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = fmt.Fprint(w, fakeISBN)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	edition, err := c.GetEditionByISBN(context.Background(), "0140328726")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotPath, "/isbn/0140328726.json") {
+		t.Errorf("path = %q, want /isbn/0140328726.json", gotPath)
+	}
+	if edition.Key != "/books/OL7394022M" {
+		t.Errorf("Key = %q", edition.Key)
+	}
+	if edition.Title != "Fantastic Mr. Fox" {
+		t.Errorf("Title = %q", edition.Title)
+	}
+	if len(edition.Publishers) != 1 || edition.Publishers[0] != "Puffin" {
+		t.Errorf("Publishers = %v", edition.Publishers)
+	}
+	if edition.PublishDate != "2009" {
+		t.Errorf("PublishDate = %q", edition.PublishDate)
+	}
+	if edition.Pages != 96 {
+		t.Errorf("Pages = %d, want 96", edition.Pages)
+	}
+	if len(edition.ISBN10) != 1 || edition.ISBN10[0] != "0140328726" {
+		t.Errorf("ISBN10 = %v", edition.ISBN10)
+	}
+	if len(edition.ISBN13) != 1 || edition.ISBN13[0] != "9780140328721" {
+		t.Errorf("ISBN13 = %v", edition.ISBN13)
+	}
+}
+
+func TestGetEditionByISBNReturnsErrorOn404(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, err := c.GetEditionByISBN(context.Background(), "0000000000")
+	if err == nil {
+		t.Error("expected error for 404 ISBN")
+	}
+}
+
+// --- JSON marshal roundtrip for types ---
+
+func TestTypesJSONMarshal(t *testing.T) {
+	book := openlibrary.Book{
+		Key:         "OL45804W",
+		Title:       "Dune",
+		Authors:     []string{"Frank Herbert"},
+		PublishYear: 1965,
+		ISBN:        []string{"0441013597"},
+	}
+	b, err := json.Marshal(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got openlibrary.Book
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != book.Key || got.Title != book.Title {
+		t.Errorf("roundtrip mismatch: %+v", got)
+	}
+
+	work := openlibrary.Work{
+		Key:         "OL45804W",
+		Title:       "Dune",
+		Description: "A desert planet.",
+		Subjects:    []string{"Science fiction"},
+		Covers:      []int{7979059},
+	}
+	wb, err := json.Marshal(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotWork openlibrary.Work
+	if err := json.Unmarshal(wb, &gotWork); err != nil {
+		t.Fatal(err)
+	}
+	if gotWork.Key != work.Key {
+		t.Errorf("Work roundtrip Key = %q", gotWork.Key)
 	}
 }
