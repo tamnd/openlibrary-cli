@@ -1,12 +1,14 @@
 package openlibrary
 
-// Book is a search result record from Open Library.
+// Book is a search result or ISBN lookup record from Open Library.
 type Book struct {
 	Key              string `kit:"id" json:"key"`
 	Title            string `json:"title"`
-	Authors          string `json:"authors"`           // comma-joined author names
+	Authors          string `json:"authors"`            // comma-joined author names
 	FirstPublishYear int    `json:"first_publish_year"`
-	ISBN             string `json:"isbn"`              // first ISBN if any
+	ISBN             string `json:"isbn"`               // first ISBN if any
+	Subjects         string `json:"subjects"`           // comma-joined first 3 subjects
+	Pages            int    `json:"pages"`              // number_of_pages_median (search) or number_of_pages (isbn)
 }
 
 // Work is a full work record from /works/{key}.json.

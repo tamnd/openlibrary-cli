@@ -414,6 +414,156 @@ func TestGetEditionsReturnsErrorOn404(t *testing.T) {
 	}
 }
 
+// --- GetBookByISBN ---
+
+const fakeISBNResponse = `{
+  "ISBN:9780140328721": {
+    "title": "Fantastic Mr. Fox",
+    "url": "https://openlibrary.org/books/OL7353617M/Fantastic_Mr._Fox",
+    "authors": [{"name": "Roald Dahl", "url": "https://openlibrary.org/authors/OL34184A/Roald_Dahl"}],
+    "publishers": [{"name": "Puffin Books"}],
+    "publish_date": "October 1, 1988",
+    "number_of_pages": 96,
+    "subjects": [{"name": "Fiction"}, {"name": "Foxes"}, {"name": "Children"}, {"name": "Humor"}],
+    "identifiers": {"isbn_10": ["0140328726"], "isbn_13": ["9780140328721"]}
+  }
+}`
+
+func TestGetBookByISBNParses(t *testing.T) {
+	var gotPath, gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = fmt.Fprint(w, fakeISBNResponse)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	book, err := c.GetBookByISBN(context.Background(), "9780140328721")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotPath, "/api/books") {
+		t.Errorf("path = %q, want /api/books", gotPath)
+	}
+	if !strings.Contains(gotQuery, "ISBN%3A9780140328721") && !strings.Contains(gotQuery, "ISBN:9780140328721") {
+		t.Errorf("query = %q, want bibkeys=ISBN:9780140328721", gotQuery)
+	}
+	if book.Key != "ISBN:9780140328721" {
+		t.Errorf("Key = %q, want ISBN:9780140328721", book.Key)
+	}
+	if book.Title != "Fantastic Mr. Fox" {
+		t.Errorf("Title = %q, want Fantastic Mr. Fox", book.Title)
+	}
+	if book.Authors != "Roald Dahl" {
+		t.Errorf("Authors = %q, want Roald Dahl", book.Authors)
+	}
+	if book.ISBN != "9780140328721" {
+		t.Errorf("ISBN = %q, want 9780140328721", book.ISBN)
+	}
+	if book.Pages != 96 {
+		t.Errorf("Pages = %d, want 96", book.Pages)
+	}
+	// subjects capped at 3
+	parts := strings.Split(book.Subjects, ", ")
+	if len(parts) != 3 {
+		t.Errorf("Subjects has %d parts, want 3 (capped)", len(parts))
+	}
+}
+
+func TestGetBookByISBNStripsHyphens(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = fmt.Fprint(w, fakeISBNResponse)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	// ISBN with hyphens — should be normalized to digits only
+	_, _ = c.GetBookByISBN(context.Background(), "978-0-14-032872-1")
+	if !strings.Contains(gotQuery, "9780140328721") {
+		t.Errorf("query = %q, hyphens not stripped from ISBN", gotQuery)
+	}
+}
+
+func TestGetBookByISBNNotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{}`) // empty map = book not found
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	_, err := c.GetBookByISBN(context.Background(), "0000000000")
+	if err == nil {
+		t.Error("expected error when ISBN not in response")
+	}
+}
+
+// --- SearchAuthors ---
+
+const fakeAuthorSearch = `{
+  "numFound": 2,
+  "docs": [
+    {"key": "/authors/OL26320A", "name": "J.R.R. Tolkien", "birth_date": "1892", "death_date": "1973"},
+    {"key": "/authors/OL123A",   "name": "Christopher Tolkien", "birth_date": "1924", "death_date": "2020"}
+  ]
+}`
+
+func TestSearchAuthorsParses(t *testing.T) {
+	var gotPath, gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		_, _ = fmt.Fprint(w, fakeAuthorSearch)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	authors, err := c.SearchAuthors(context.Background(), "tolkien", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotPath, "/search/authors.json") {
+		t.Errorf("path = %q, want /search/authors.json", gotPath)
+	}
+	if !strings.Contains(gotQuery, "limit=5") {
+		t.Errorf("query = %q, want limit=5", gotQuery)
+	}
+	if len(authors) != 2 {
+		t.Fatalf("want 2 authors, got %d", len(authors))
+	}
+	a := authors[0]
+	if a.Key != "OL26320A" {
+		t.Errorf("Key = %q, want OL26320A (prefix stripped)", a.Key)
+	}
+	if a.Name != "J.R.R. Tolkien" {
+		t.Errorf("Name = %q, want J.R.R. Tolkien", a.Name)
+	}
+	if a.BirthDate != "1892" {
+		t.Errorf("BirthDate = %q, want 1892", a.BirthDate)
+	}
+	if a.DeathDate != "1973" {
+		t.Errorf("DeathDate = %q, want 1973", a.DeathDate)
+	}
+}
+
+func TestSearchAuthorsEmpty(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"numFound":0,"docs":[]}`)
+	}))
+	defer ts.Close()
+
+	c := newTestClient(ts)
+	authors, err := c.SearchAuthors(context.Background(), "zzznobodyyy", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authors) != 0 {
+		t.Errorf("want 0 authors, got %d", len(authors))
+	}
+}
+
 // --- JSON marshal roundtrip for types ---
 
 func TestTypesJSONMarshal(t *testing.T) {

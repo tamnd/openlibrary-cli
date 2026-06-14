@@ -53,6 +53,11 @@ func (Domain) Register(app *kit.App) {
 		Summary: "Search books by query",
 		Args:    []kit.Arg{{Name: "query", Help: "search query"}}}, searchOp)
 
+	// book: fetch book by ISBN
+	kit.Handle(app, kit.OpMeta{Name: "book", Group: "read", Single: true,
+		Summary: "Get book by ISBN (hyphens optional, e.g. 9780140328721)",
+		Args:    []kit.Arg{{Name: "isbn", Help: "ISBN-10 or ISBN-13 (hyphens stripped automatically)"}}}, bookOp)
+
 	// work: fetch work detail by OL ID
 	kit.Handle(app, kit.OpMeta{Name: "work", Group: "read", Single: true,
 		Summary: "Get work detail by OL ID (e.g. OL45804W)",
@@ -62,6 +67,11 @@ func (Domain) Register(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", Single: true,
 		Summary: "Get author detail by OL ID (e.g. OL34184A)",
 		Args:    []kit.Arg{{Name: "id", Help: "author key e.g. OL34184A (without /authors/ prefix)"}}}, authorOp)
+
+	// search-authors: search authors by query string
+	kit.Handle(app, kit.OpMeta{Name: "search-authors", Group: "read", List: true,
+		Summary: "Search authors by query",
+		Args:    []kit.Arg{{Name: "query", Help: "author name or query"}}}, searchAuthorsOp)
 
 	// editions: list editions of a work
 	kit.Handle(app, kit.OpMeta{Name: "editions", Group: "read", List: true,
@@ -96,6 +106,11 @@ type searchInput struct {
 	Client *Client `kit:"inject"`
 }
 
+type bookInput struct {
+	ISBN   string  `kit:"arg" help:"ISBN-10 or ISBN-13 (hyphens stripped automatically)"`
+	Client *Client `kit:"inject"`
+}
+
 type workInput struct {
 	ID     string  `kit:"arg" help:"work key e.g. OL45804W (without /works/ prefix)"`
 	Client *Client `kit:"inject"`
@@ -103,6 +118,12 @@ type workInput struct {
 
 type authorInput struct {
 	ID     string  `kit:"arg" help:"author key e.g. OL34184A (without /authors/ prefix)"`
+	Client *Client `kit:"inject"`
+}
+
+type searchAuthorsInput struct {
+	Query  string  `kit:"arg" help:"author name or query"`
+	Limit  int     `kit:"flag,inherit" help:"max results" default:"20"`
 	Client *Client `kit:"inject"`
 }
 
@@ -134,6 +155,14 @@ func searchOp(ctx context.Context, in searchInput, emit func(*Book) error) error
 	return nil
 }
 
+func bookOp(ctx context.Context, in bookInput, emit func(*Book) error) error {
+	book, err := in.Client.GetBookByISBN(ctx, in.ISBN)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(book)
+}
+
 func workOp(ctx context.Context, in workInput, emit func(*Work) error) error {
 	work, err := in.Client.GetWork(ctx, in.ID)
 	if err != nil {
@@ -148,6 +177,26 @@ func authorOp(ctx context.Context, in authorInput, emit func(*Author) error) err
 		return mapErr(err)
 	}
 	return emit(author)
+}
+
+func searchAuthorsOp(ctx context.Context, in searchAuthorsInput, emit func(*Author) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	authors, err := in.Client.SearchAuthors(ctx, in.Query, limit)
+	if err != nil {
+		return mapErr(err)
+	}
+	if len(authors) == 0 {
+		return errs.NotFound("no authors found for %q", in.Query)
+	}
+	for i := range authors {
+		if err := emit(&authors[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func editionsOp(ctx context.Context, in editionsInput, emit func(*Edition) error) error {

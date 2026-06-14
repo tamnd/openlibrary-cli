@@ -71,11 +71,55 @@ type searchResponse struct {
 }
 
 type rawDoc struct {
-	Key              string   `json:"key"`
-	Title            string   `json:"title"`
-	AuthorName       []string `json:"author_name"`
-	FirstPublishYear int      `json:"first_publish_year"`
-	ISBN             []string `json:"isbn"`
+	Key                  string   `json:"key"`
+	Title                string   `json:"title"`
+	AuthorName           []string `json:"author_name"`
+	FirstPublishYear     int      `json:"first_publish_year"`
+	ISBN                 []string `json:"isbn"`
+	Subject              []string `json:"subject"`
+	NumberOfPagesMedian  int      `json:"number_of_pages_median"`
+}
+
+// rawISBNBook is the per-ISBN entry returned by /api/books.
+type rawISBNBook struct {
+	Title         string          `json:"title"`
+	URL           string          `json:"url"`
+	Authors       []rawISBNAuthor `json:"authors"`
+	Publishers    []rawISBNPub    `json:"publishers"`
+	PublishDate   string          `json:"publish_date"`
+	NumberOfPages int             `json:"number_of_pages"`
+	Subjects      []rawISBNSub    `json:"subjects"`
+	Identifiers   rawISBNIdents   `json:"identifiers"`
+}
+
+type rawISBNAuthor struct {
+	Name string `json:"name"`
+}
+
+type rawISBNPub struct {
+	Name string `json:"name"`
+}
+
+type rawISBNSub struct {
+	Name string `json:"name"`
+}
+
+type rawISBNIdents struct {
+	ISBN10 []string `json:"isbn_10"`
+	ISBN13 []string `json:"isbn_13"`
+}
+
+// rawAuthorSearchResponse is the result of /search/authors.json.
+type rawAuthorSearchResponse struct {
+	NumFound int           `json:"numFound"`
+	Docs     []rawAuthorDoc `json:"docs"`
+}
+
+type rawAuthorDoc struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	BirthDate string `json:"birth_date"`
+	DeathDate string `json:"death_date"`
 }
 
 type rawWorkDetail struct {
@@ -127,7 +171,7 @@ func flattenText(raw json.RawMessage) string {
 
 // SearchBooks searches Open Library for books matching query.
 func (c *Client) SearchBooks(ctx context.Context, query string, limit int) ([]Book, error) {
-	u := fmt.Sprintf("%s/search.json?q=%s&fields=key,title,author_name,first_publish_year,isbn&limit=%d",
+	u := fmt.Sprintf("%s/search.json?q=%s&fields=key,title,author_name,first_publish_year,isbn,subject,number_of_pages_median&limit=%d",
 		c.cfg.BaseURL, url.QueryEscape(query), limit)
 	body, err := c.get(ctx, u)
 	if err != nil {
@@ -143,15 +187,96 @@ func (c *Client) SearchBooks(ctx context.Context, query string, limit int) ([]Bo
 		if len(d.ISBN) > 0 {
 			isbn = d.ISBN[0]
 		}
+		subjects := d.Subject
+		if len(subjects) > 3 {
+			subjects = subjects[:3]
+		}
 		books[i] = Book{
 			Key:              stripWorksPrefix(d.Key),
 			Title:            d.Title,
 			Authors:          strings.Join(d.AuthorName, ", "),
 			FirstPublishYear: d.FirstPublishYear,
 			ISBN:             isbn,
+			Subjects:         strings.Join(subjects, ", "),
+			Pages:            d.NumberOfPagesMedian,
 		}
 	}
 	return books, nil
+}
+
+// normalizeISBN strips hyphens from an ISBN string and returns digits only.
+func normalizeISBN(isbn string) string {
+	var b strings.Builder
+	for _, r := range isbn {
+		if r >= '0' && r <= '9' || r == 'X' || r == 'x' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// GetBookByISBN fetches a book by ISBN using the /api/books endpoint.
+// The isbn argument may contain hyphens; they are stripped automatically.
+func (c *Client) GetBookByISBN(ctx context.Context, isbn string) (*Book, error) {
+	isbn = normalizeISBN(isbn)
+	bibkey := "ISBN:" + isbn
+	u := fmt.Sprintf("%s/api/books?bibkeys=%s&format=json&jscmd=data",
+		c.cfg.BaseURL, url.QueryEscape(bibkey))
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var resp map[string]rawISBNBook
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode isbn response: %w", err)
+	}
+	raw, ok := resp[bibkey]
+	if !ok {
+		return nil, fmt.Errorf("book not found for ISBN %s", isbn)
+	}
+	authorNames := make([]string, len(raw.Authors))
+	for i, a := range raw.Authors {
+		authorNames[i] = a.Name
+	}
+	subjects := make([]string, len(raw.Subjects))
+	for i, s := range raw.Subjects {
+		subjects[i] = s.Name
+	}
+	if len(subjects) > 3 {
+		subjects = subjects[:3]
+	}
+	return &Book{
+		Key:      bibkey,
+		Title:    raw.Title,
+		Authors:  strings.Join(authorNames, ", "),
+		ISBN:     isbn,
+		Subjects: strings.Join(subjects, ", "),
+		Pages:    raw.NumberOfPages,
+	}, nil
+}
+
+// SearchAuthors searches Open Library for authors matching query.
+func (c *Client) SearchAuthors(ctx context.Context, query string, limit int) ([]Author, error) {
+	u := fmt.Sprintf("%s/search/authors.json?q=%s&limit=%d",
+		c.cfg.BaseURL, url.QueryEscape(query), limit)
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var resp rawAuthorSearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode author search response: %w", err)
+	}
+	authors := make([]Author, len(resp.Docs))
+	for i, d := range resp.Docs {
+		authors[i] = Author{
+			Key:       stripAuthorsPrefix(d.Key),
+			Name:      d.Name,
+			BirthDate: d.BirthDate,
+			DeathDate: d.DeathDate,
+		}
+	}
+	return authors, nil
 }
 
 // GetWork fetches the full work record by OL ID (e.g. "OL45804W").
