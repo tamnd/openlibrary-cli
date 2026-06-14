@@ -1,0 +1,10 @@
+title       = "openlibrary"
+baseURL     = "https://openlibrary-cli.tamnd.com/"
+description = "A command line for openlibrary."
+contentDir  = "content"
+outputDir   = "public"
+theme       = "tago-doks"
+syntaxHighlight = "true"
+
+[params]
+github = "https://github.com/tamnd/openlibrary-cli"
