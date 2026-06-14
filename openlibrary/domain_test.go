@@ -26,7 +26,7 @@ func TestClassify(t *testing.T) {
 		typ string
 		id  string
 	}{
-		{"OL26320A", "author", "OL26320A"},
+		{"OL34184A", "author", "OL34184A"},
 		{"OL45804W", "work", "OL45804W"},
 		{"0140328726", "isbn", "0140328726"},
 		{"9780140328726", "isbn", "9780140328726"},
@@ -55,7 +55,7 @@ func TestLocate(t *testing.T) {
 		id      string
 		want    string
 	}{
-		{"author", "OL26320A", "https://openlibrary.org/authors/OL26320A"},
+		{"author", "OL34184A", "https://openlibrary.org/authors/OL34184A"},
 		{"work", "OL45804W", "https://openlibrary.org/works/OL45804W"},
 		{"isbn", "0140328726", "https://openlibrary.org/isbn/0140328726"},
 		{"query", "dune", "https://openlibrary.org/search?q=dune"},
@@ -77,7 +77,7 @@ func TestLocateUnknown(t *testing.T) {
 }
 
 func TestFlattenText(t *testing.T) {
-	import_json := func(s string) []byte { return []byte(s) }
+	raw := func(s string) []byte { return []byte(s) }
 
 	cases := []struct {
 		input string
@@ -89,24 +89,9 @@ func TestFlattenText(t *testing.T) {
 		{`{}`, ""},
 	}
 	for _, tc := range cases {
-		got := flattenText(import_json(tc.input))
+		got := flattenText(raw(tc.input))
 		if got != tc.want {
 			t.Errorf("flattenText(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-func TestSubjectSlug(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"science fiction", "science_fiction"},
-		{"Science Fiction", "science_fiction"},
-		{"  history  ", "history"},
-		{"computer_science", "computer_science"},
-	}
-	for _, tc := range cases {
-		got := subjectSlug(tc.in)
-		if got != tc.want {
-			t.Errorf("subjectSlug(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -118,10 +103,10 @@ func TestStripPrefixes(t *testing.T) {
 	if got := stripWorksPrefix("OL45804W"); got != "OL45804W" {
 		t.Errorf("stripWorksPrefix no-op = %q", got)
 	}
-	if got := stripAuthorsPrefix("/authors/OL26320A"); got != "OL26320A" {
+	if got := stripAuthorsPrefix("/authors/OL34184A"); got != "OL34184A" {
 		t.Errorf("stripAuthorsPrefix = %q", got)
 	}
-	if got := stripAuthorsPrefix("OL26320A"); got != "OL26320A" {
+	if got := stripAuthorsPrefix("OL34184A"); got != "OL34184A" {
 		t.Errorf("stripAuthorsPrefix no-op = %q", got)
 	}
 }

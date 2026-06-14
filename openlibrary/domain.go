@@ -56,22 +56,17 @@ func (Domain) Register(app *kit.App) {
 	// work: fetch work detail by OL ID
 	kit.Handle(app, kit.OpMeta{Name: "work", Group: "read", Single: true,
 		Summary: "Get work detail by OL ID (e.g. OL45804W)",
-		Args:    []kit.Arg{{Name: "key", Help: "work key e.g. OL45804W (without /works/ prefix)"}}}, workOp)
+		Args:    []kit.Arg{{Name: "id", Help: "work key e.g. OL45804W (without /works/ prefix)"}}}, workOp)
 
-	// author: fetch author detail and works by OL ID
-	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", List: true,
-		Summary: "Get author detail and works by OL ID (e.g. OL26320A)",
-		Args:    []kit.Arg{{Name: "key", Help: "author key e.g. OL26320A (without /authors/ prefix)"}}}, authorOp)
+	// author: fetch author detail by OL ID
+	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", Single: true,
+		Summary: "Get author detail by OL ID (e.g. OL34184A)",
+		Args:    []kit.Arg{{Name: "id", Help: "author key e.g. OL34184A (without /authors/ prefix)"}}}, authorOp)
 
-	// subject: list works in a subject category
-	kit.Handle(app, kit.OpMeta{Name: "subject", Group: "read", List: true,
-		Summary: "List works in a subject category",
-		Args:    []kit.Arg{{Name: "subject", Help: "subject slug e.g. science_fiction"}}}, subjectOp)
-
-	// isbn: fetch a book edition by ISBN
-	kit.Handle(app, kit.OpMeta{Name: "isbn", Group: "read", Single: true,
-		Summary: "Get book edition details by ISBN",
-		Args:    []kit.Arg{{Name: "isbn", Help: "ISBN-10 or ISBN-13"}}}, isbnOp)
+	// editions: list editions of a work
+	kit.Handle(app, kit.OpMeta{Name: "editions", Group: "read", List: true,
+		Summary: "List editions of a work by OL ID (e.g. OL45804W)",
+		Args:    []kit.Arg{{Name: "id", Help: "work key e.g. OL45804W"}}}, editionsOp)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -97,29 +92,23 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 type searchInput struct {
 	Query  string  `kit:"arg" help:"search query"`
-	Limit  int     `kit:"flag,inherit" help:"max results" default:"10"`
+	Limit  int     `kit:"flag,inherit" help:"max results" default:"20"`
 	Client *Client `kit:"inject"`
 }
 
 type workInput struct {
-	Key    string  `kit:"arg" help:"work key e.g. OL45804W (without /works/ prefix)"`
+	ID     string  `kit:"arg" help:"work key e.g. OL45804W (without /works/ prefix)"`
 	Client *Client `kit:"inject"`
 }
 
 type authorInput struct {
-	Key    string  `kit:"arg" help:"author key e.g. OL26320A (without /authors/ prefix)"`
-	Limit  int     `kit:"flag,inherit"`
+	ID     string  `kit:"arg" help:"author key e.g. OL34184A (without /authors/ prefix)"`
 	Client *Client `kit:"inject"`
 }
 
-type subjectInput struct {
-	Subject string  `kit:"arg" help:"subject slug e.g. science_fiction"`
-	Limit   int     `kit:"flag,inherit" help:"max works" default:"10"`
-	Client  *Client `kit:"inject"`
-}
-
-type isbnInput struct {
-	ISBN   string  `kit:"arg" help:"ISBN-10 or ISBN-13"`
+type editionsInput struct {
+	ID     string  `kit:"arg" help:"work key e.g. OL45804W"`
+	Limit  int     `kit:"flag,inherit" help:"max editions" default:"10"`
 	Client *Client `kit:"inject"`
 }
 
@@ -128,7 +117,7 @@ type isbnInput struct {
 func searchOp(ctx context.Context, in searchInput, emit func(*Book) error) error {
 	limit := in.Limit
 	if limit <= 0 {
-		limit = 10
+		limit = 20
 	}
 	books, err := in.Client.SearchBooks(ctx, in.Query, limit)
 	if err != nil {
@@ -146,66 +135,49 @@ func searchOp(ctx context.Context, in searchInput, emit func(*Book) error) error
 }
 
 func workOp(ctx context.Context, in workInput, emit func(*Work) error) error {
-	work, err := in.Client.GetWork(ctx, in.Key)
+	work, err := in.Client.GetWork(ctx, in.ID)
 	if err != nil {
 		return mapErr(err)
 	}
 	return emit(work)
 }
 
-func authorOp(ctx context.Context, in authorInput, emit func(*SubjectWork) error) error {
+func authorOp(ctx context.Context, in authorInput, emit func(*Author) error) error {
+	author, err := in.Client.GetAuthor(ctx, in.ID)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(author)
+}
+
+func editionsOp(ctx context.Context, in editionsInput, emit func(*Edition) error) error {
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 10
 	}
-	works, err := in.Client.GetAuthorWorks(ctx, in.Key, limit)
+	editions, err := in.Client.GetEditions(ctx, in.ID, limit)
 	if err != nil {
 		return mapErr(err)
 	}
-	for i := range works {
-		if err := emit(&works[i]); err != nil {
+	if len(editions) == 0 {
+		return errs.NotFound("no editions found for work %q", in.ID)
+	}
+	for i := range editions {
+		if err := emit(&editions[i]); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func subjectOp(ctx context.Context, in subjectInput, emit func(*SubjectWork) error) error {
-	limit := in.Limit
-	if limit <= 0 {
-		limit = 10
-	}
-	works, err := in.Client.GetSubject(ctx, in.Subject, limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	if len(works) == 0 {
-		return errs.NotFound("no works found for subject %q", in.Subject)
-	}
-	for i := range works {
-		if err := emit(&works[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func isbnOp(ctx context.Context, in isbnInput, emit func(*Edition) error) error {
-	edition, err := in.Client.GetEditionByISBN(ctx, in.ISBN)
-	if err != nil {
-		return mapErr(err)
-	}
-	return emit(edition)
 }
 
 // --- Resolver: pure string functions, no network ---
 
 // Classify turns any accepted input into the canonical (type, id).
 //
-//   - starts with "OL" and ends in "A" (like OL26320A) → ("author", input)
-//   - starts with "OL" and ends in "W" (like OL45804W) → ("work", input)
-//   - all digits, 10 or 13 chars → ("isbn", input)
-//   - otherwise → ("query", input)
+//   - starts with "OL" and ends in "A" (like OL34184A) -> ("author", input)
+//   - starts with "OL" and ends in "W" (like OL45804W) -> ("work", input)
+//   - all digits, 10 or 13 chars -> ("isbn", input)
+//   - otherwise -> ("query", input)
 func (Domain) Classify(input string) (uriType, id string, err error) {
 	if input == "" {
 		return "", "", errs.Usage("empty openlibrary reference")
