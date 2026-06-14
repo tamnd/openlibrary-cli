@@ -55,6 +55,21 @@ func (Domain) Register(app *kit.App) {
 	kit.Handle(app, kit.OpMeta{Name: "subjects", Group: "read", List: true,
 		Summary: "List books in a subject category",
 		Args:    []kit.Arg{{Name: "subject", Help: "subject name (e.g. \"computer science\")"}}}, subjectBooks)
+
+	// authors: search authors by name
+	kit.Handle(app, kit.OpMeta{Name: "authors", Group: "read", List: true,
+		Summary: "Search authors by name",
+		Args:    []kit.Arg{{Name: "query", Help: "author name"}}}, searchAuthorsOp)
+
+	// author: fetch author detail by OL ID
+	kit.Handle(app, kit.OpMeta{Name: "author", Group: "read", Single: true,
+		Summary: "Get author detail by OL ID (e.g. OL23919A)",
+		Args:    []kit.Arg{{Name: "olid", Help: "OL author ID"}}}, getAuthorOp)
+
+	// work: fetch work detail by OL ID
+	kit.Handle(app, kit.OpMeta{Name: "work", Group: "read", Single: true,
+		Summary: "Get work detail by OL ID (e.g. OL45804W)",
+		Args:    []kit.Arg{{Name: "olid", Help: "OL work ID"}}}, getWorkOp)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -90,6 +105,22 @@ type subjectInput struct {
 	Client  *Client `kit:"inject"`
 }
 
+type authorsInput struct {
+	Query  string  `kit:"arg"          help:"author name"`
+	Limit  int     `kit:"flag,inherit" help:"max results (default 10)"`
+	Client *Client `kit:"inject"`
+}
+
+type authorInput struct {
+	OLID   string  `kit:"arg"    help:"OL author ID (e.g. OL23919A)"`
+	Client *Client `kit:"inject"`
+}
+
+type workInput struct {
+	OLID   string  `kit:"arg"    help:"OL work ID (e.g. OL45804W)"`
+	Client *Client `kit:"inject"`
+}
+
 // --- handlers ---
 
 func searchBooks(ctx context.Context, in searchInput, emit func(*Book) error) error {
@@ -110,6 +141,42 @@ func searchBooks(ctx context.Context, in searchInput, emit func(*Book) error) er
 		}
 	}
 	return nil
+}
+
+func searchAuthorsOp(ctx context.Context, in authorsInput, emit func(*Author) error) error {
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	authors, err := in.Client.SearchAuthors(ctx, in.Query, limit)
+	if err != nil {
+		return mapErr(err)
+	}
+	if len(authors) == 0 {
+		return errs.NotFound("no authors found for %q", in.Query)
+	}
+	for i := range authors {
+		if err := emit(&authors[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getAuthorOp(ctx context.Context, in authorInput, emit func(*Author) error) error {
+	author, err := in.Client.GetAuthor(ctx, in.OLID)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(author)
+}
+
+func getWorkOp(ctx context.Context, in workInput, emit func(*Work) error) error {
+	work, err := in.Client.GetWork(ctx, in.OLID)
+	if err != nil {
+		return mapErr(err)
+	}
+	return emit(work)
 }
 
 func subjectBooks(ctx context.Context, in subjectInput, emit func(*Book) error) error {

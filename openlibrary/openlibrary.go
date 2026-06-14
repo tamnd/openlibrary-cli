@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,6 +51,7 @@ func DefaultConfig() Config {
 type Client struct {
 	cfg  Config
 	http *http.Client
+	mu   sync.Mutex
 	last time.Time
 }
 
@@ -95,6 +97,59 @@ type rawWork struct {
 
 type rawAuthor struct {
 	Name string `json:"name"`
+}
+
+type authorSearchResponse struct {
+	NumFound int             `json:"numFound"`
+	Docs     []rawAuthorDoc  `json:"docs"`
+}
+
+type rawAuthorDoc struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	BirthDate string `json:"birth_date"`
+	WorkCount int    `json:"work_count"`
+	TopWork   string `json:"top_work"`
+}
+
+type rawAuthorDetail struct {
+	Key       string          `json:"key"`
+	Name      string          `json:"name"`
+	BirthDate string          `json:"birth_date"`
+	DeathDate string          `json:"death_date"`
+}
+
+type rawWorkDetail struct {
+	Key         string           `json:"key"`
+	Title       string           `json:"title"`
+	Description json.RawMessage  `json:"description"`
+	Subjects    []string         `json:"subjects"`
+	Authors     []rawWorkAuthor  `json:"authors"`
+}
+
+type rawWorkAuthor struct {
+	Author struct {
+		Key string `json:"key"`
+	} `json:"author"`
+}
+
+// flattenText handles Open Library's polymorphic text fields, which can be
+// either a plain string or {"type":"/type/text","value":"..."}.
+func flattenText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, true
+	}
+	var obj struct {
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Value != "" {
+		return obj.Value, true
+	}
+	return "", false
 }
 
 // SearchBooks searches Open Library for books matching query.
@@ -161,6 +216,86 @@ func (c *Client) Subject(ctx context.Context, subject string, limit int) ([]Book
 	return books, nil
 }
 
+// SearchAuthors searches Open Library for authors matching query.
+func (c *Client) SearchAuthors(ctx context.Context, query string, limit int) ([]Author, error) {
+	u := fmt.Sprintf("%s/search/authors.json?q=%s&limit=%d",
+		c.cfg.BaseURL, url.QueryEscape(query), limit)
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var resp authorSearchResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode author search response: %w", err)
+	}
+	authors := make([]Author, len(resp.Docs))
+	for i, d := range resp.Docs {
+		key := stripAuthorsPrefix(d.Key)
+		authors[i] = Author{
+			Rank:      i + 1,
+			Key:       key,
+			Name:      d.Name,
+			BirthDate: d.BirthDate,
+			WorkCount: d.WorkCount,
+			TopWork:   d.TopWork,
+			URL:       "https://openlibrary.org/authors/" + key,
+		}
+	}
+	return authors, nil
+}
+
+// GetAuthor fetches the full author record by OL ID (e.g. "OL23919A").
+// The /authors/ prefix is stripped from olid if present.
+func (c *Client) GetAuthor(ctx context.Context, olid string) (*Author, error) {
+	olid = stripAuthorsPrefix(olid)
+	u := fmt.Sprintf("%s/authors/%s.json", c.cfg.BaseURL, olid)
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var raw rawAuthorDetail
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode author response: %w", err)
+	}
+	key := stripAuthorsPrefix(raw.Key)
+	return &Author{
+		Key:       key,
+		Name:      raw.Name,
+		BirthDate: raw.BirthDate,
+		DeathDate: raw.DeathDate,
+		URL:       "https://openlibrary.org/authors/" + key,
+	}, nil
+}
+
+// GetWork fetches the full work record by OL ID (e.g. "OL45804W").
+// The /works/ prefix is stripped from olid if present.
+func (c *Client) GetWork(ctx context.Context, olid string) (*Work, error) {
+	olid = stripWorksPrefix(olid)
+	u := fmt.Sprintf("%s/works/%s.json", c.cfg.BaseURL, olid)
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var raw rawWorkDetail
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode work response: %w", err)
+	}
+	desc, _ := flattenText(raw.Description)
+	key := stripWorksPrefix(raw.Key)
+	authorKeys := make([]string, len(raw.Authors))
+	for i, a := range raw.Authors {
+		authorKeys[i] = a.Author.Key
+	}
+	return &Work{
+		Key:        key,
+		Title:      raw.Title,
+		Desc:       desc,
+		Subjects:   raw.Subjects,
+		AuthorKeys: authorKeys,
+		URL:        "https://openlibrary.org/works/" + key,
+	}, nil
+}
+
 // --- HTTP helpers ---
 
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
@@ -213,6 +348,8 @@ func (c *Client) do(ctx context.Context, url string) ([]byte, bool, error) {
 }
 
 func (c *Client) pace() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.cfg.Rate <= 0 {
 		return
 	}
@@ -234,4 +371,9 @@ func subjectSlug(s string) string {
 // stripWorksPrefix removes the /works/ prefix from an Open Library key.
 func stripWorksPrefix(key string) string {
 	return strings.TrimPrefix(key, "/works/")
+}
+
+// stripAuthorsPrefix removes the /authors/ prefix from an Open Library key.
+func stripAuthorsPrefix(key string) string {
+	return strings.TrimPrefix(key, "/authors/")
 }
