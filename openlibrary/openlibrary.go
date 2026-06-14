@@ -1,5 +1,5 @@
 // Package openlibrary is the library behind the openlibrary command line:
-// the HTTP client, request shaping, and the typed data models for openlibrary.
+// the HTTP client, request shaping, and the typed data models for Open Library.
 //
 // The Client here is the spine every command shares. It sets a real
 // User-Agent, paces requests so a busy session stays polite, and retries the
@@ -19,7 +19,7 @@ import (
 )
 
 // DefaultUserAgent identifies the client to Open Library.
-const DefaultUserAgent = "Mozilla/5.0 (compatible; openlibrary-cli/dev; +https://github.com/tamnd/openlibrary-cli)"
+const DefaultUserAgent = "openlibrary-cli/0.1 (tamnd87@gmail.com)"
 
 // Host is the site this client talks to.
 const Host = "openlibrary.org"
@@ -41,8 +41,8 @@ func DefaultConfig() Config {
 	return Config{
 		BaseURL:   BaseURL,
 		UserAgent: DefaultUserAgent,
-		Rate:      500 * time.Millisecond,
-		Timeout:   30 * time.Second,
+		Rate:      200 * time.Millisecond,
+		Timeout:   15 * time.Second,
 		Retries:   3,
 	}
 }
@@ -79,11 +79,11 @@ type rawDoc struct {
 }
 
 type rawWorkDetail struct {
-	Key         string          `json:"key"`
-	Title       string          `json:"title"`
-	Description json.RawMessage `json:"description"`
-	Subjects    []string        `json:"subjects"`
-	Covers      []int           `json:"covers"`
+	Key              string          `json:"key"`
+	Title            string          `json:"title"`
+	Description      json.RawMessage `json:"description"`
+	Subjects         []string        `json:"subjects"`
+	FirstPublishDate string          `json:"first_publish_date"`
 }
 
 type rawAuthorDetail struct {
@@ -94,39 +94,15 @@ type rawAuthorDetail struct {
 	Bio       json.RawMessage `json:"bio"`
 }
 
-type rawAuthorWorks struct {
-	Size    int       `json:"size"`
-	Entries []rawEntry `json:"entries"`
+type rawEditionsResponse struct {
+	Entries []rawEditionEntry `json:"entries"`
 }
 
-type rawEntry struct {
-	Key   string `json:"key"`
-	Title string `json:"title"`
-}
-
-type rawSubjectResponse struct {
-	Name      string        `json:"name"`
-	WorkCount int           `json:"work_count"`
-	Works     []rawSubjWork `json:"works"`
-}
-
-type rawSubjWork struct {
-	Key     string      `json:"key"`
-	Title   string      `json:"title"`
-	Authors []rawAuthor `json:"authors"`
-}
-
-type rawAuthor struct {
-	Name string `json:"name"`
-}
-
-type rawEdition struct {
+type rawEditionEntry struct {
 	Key         string   `json:"key"`
 	Title       string   `json:"title"`
 	Publishers  []string `json:"publishers"`
 	PublishDate string   `json:"publish_date"`
-	Pages       int      `json:"number_of_pages"`
-	ISBN10      []string `json:"isbn_10"`
 	ISBN13      []string `json:"isbn_13"`
 }
 
@@ -163,12 +139,16 @@ func (c *Client) SearchBooks(ctx context.Context, query string, limit int) ([]Bo
 	}
 	books := make([]Book, len(resp.Docs))
 	for i, d := range resp.Docs {
+		isbn := ""
+		if len(d.ISBN) > 0 {
+			isbn = d.ISBN[0]
+		}
 		books[i] = Book{
-			Key:         stripWorksPrefix(d.Key),
-			Title:       d.Title,
-			Authors:     d.AuthorName,
-			PublishYear: d.FirstPublishYear,
-			ISBN:        d.ISBN,
+			Key:              stripWorksPrefix(d.Key),
+			Title:            d.Title,
+			Authors:          strings.Join(d.AuthorName, ", "),
+			FirstPublishYear: d.FirstPublishYear,
+			ISBN:             isbn,
 		}
 	}
 	return books, nil
@@ -187,16 +167,20 @@ func (c *Client) GetWork(ctx context.Context, olid string) (*Work, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, fmt.Errorf("decode work response: %w", err)
 	}
+	subjects := raw.Subjects
+	if len(subjects) > 5 {
+		subjects = subjects[:5]
+	}
 	return &Work{
-		Key:         stripWorksPrefix(raw.Key),
-		Title:       raw.Title,
-		Description: flattenText(raw.Description),
-		Subjects:    raw.Subjects,
-		Covers:      raw.Covers,
+		Key:          stripWorksPrefix(raw.Key),
+		Title:        raw.Title,
+		Description:  flattenText(raw.Description),
+		Subjects:     strings.Join(subjects, ", "),
+		FirstPublish: raw.FirstPublishDate,
 	}, nil
 }
 
-// GetAuthor fetches the full author record by OL ID (e.g. "OL26320A").
+// GetAuthor fetches the full author record by OL ID (e.g. "OL34184A").
 // The /authors/ prefix is stripped from olid if present.
 func (c *Client) GetAuthor(ctx context.Context, olid string) (*Author, error) {
 	olid = stripAuthorsPrefix(olid)
@@ -218,75 +202,37 @@ func (c *Client) GetAuthor(ctx context.Context, olid string) (*Author, error) {
 	}, nil
 }
 
-// GetAuthorWorks fetches the works list for an author by OL ID.
-func (c *Client) GetAuthorWorks(ctx context.Context, olid string, limit int) ([]SubjectWork, error) {
-	olid = stripAuthorsPrefix(olid)
-	u := fmt.Sprintf("%s/authors/%s/works.json?limit=%d", c.cfg.BaseURL, olid, limit)
+// GetEditions fetches the editions list for a work by OL ID (e.g. "OL45804W").
+func (c *Client) GetEditions(ctx context.Context, olid string, limit int) ([]Edition, error) {
+	olid = stripWorksPrefix(olid)
+	u := fmt.Sprintf("%s/works/%s/editions.json?limit=%d", c.cfg.BaseURL, olid, limit)
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var raw rawAuthorWorks
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decode author works response: %w", err)
-	}
-	works := make([]SubjectWork, len(raw.Entries))
-	for i, e := range raw.Entries {
-		works[i] = SubjectWork{
-			Key:   stripWorksPrefix(e.Key),
-			Title: e.Title,
-		}
-	}
-	return works, nil
-}
-
-// GetSubject fetches the works under a subject category.
-func (c *Client) GetSubject(ctx context.Context, subject string, limit int) ([]SubjectWork, error) {
-	slug := subjectSlug(subject)
-	u := fmt.Sprintf("%s/subjects/%s.json?limit=%d", c.cfg.BaseURL, slug, limit)
-	body, err := c.get(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	var resp rawSubjectResponse
+	var resp rawEditionsResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("decode subject response: %w", err)
+		return nil, fmt.Errorf("decode editions response: %w", err)
 	}
-	works := make([]SubjectWork, len(resp.Works))
-	for i, w := range resp.Works {
-		authors := make([]string, len(w.Authors))
-		for j, a := range w.Authors {
-			authors[j] = a.Name
+	editions := make([]Edition, len(resp.Entries))
+	for i, e := range resp.Entries {
+		publisher := ""
+		if len(e.Publishers) > 0 {
+			publisher = e.Publishers[0]
 		}
-		works[i] = SubjectWork{
-			Key:     stripWorksPrefix(w.Key),
-			Title:   w.Title,
-			Authors: authors,
+		isbn13 := ""
+		if len(e.ISBN13) > 0 {
+			isbn13 = e.ISBN13[0]
+		}
+		editions[i] = Edition{
+			Key:       e.Key,
+			Title:     e.Title,
+			Publisher: publisher,
+			Published: e.PublishDate,
+			ISBN13:    isbn13,
 		}
 	}
-	return works, nil
-}
-
-// GetEditionByISBN fetches a book edition by ISBN (10 or 13 digits).
-func (c *Client) GetEditionByISBN(ctx context.Context, isbn string) (*Edition, error) {
-	u := fmt.Sprintf("%s/isbn/%s.json", c.cfg.BaseURL, isbn)
-	body, err := c.get(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	var raw rawEdition
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decode isbn response: %w", err)
-	}
-	return &Edition{
-		Key:         raw.Key,
-		Title:       raw.Title,
-		Publishers:  raw.Publishers,
-		PublishDate: raw.PublishDate,
-		Pages:       raw.Pages,
-		ISBN10:      raw.ISBN10,
-		ISBN13:      raw.ISBN13,
-	}, nil
+	return editions, nil
 }
 
 // --- HTTP helpers ---
@@ -354,11 +300,6 @@ func (c *Client) pace() {
 
 func backoff(attempt int) time.Duration {
 	return min(time.Duration(attempt)*500*time.Millisecond, 5*time.Second)
-}
-
-// subjectSlug normalises a subject name into the slug the API expects.
-func subjectSlug(s string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), " ", "_"))
 }
 
 // stripWorksPrefix removes the /works/ prefix from an Open Library key.
